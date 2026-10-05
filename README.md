@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Exposys Data Labs – Top 6 Candidate Selection & WhatsApp Notification
 
 A complete, production-grade local web application built for the **Exposys Data Labs** coding task. The system processes an official candidate CSV dataset using Pandas, validates data integrity, dynamically ranks candidates by score (with stable tie-breaking), shortlists the **Top 6 candidates**, and generates personalized, ready-to-send WhatsApp notifications with pre-filled messages.
@@ -228,3 +229,6 @@ Open your browser at:
 ```text
 http://127.0.0.1:5000
 ```
+=======
+# exposys
+>>>>>>> ca8f20d17a3b28e8d0caf2e3c54cc06a40df90f5
