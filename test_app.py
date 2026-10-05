@@ -50,5 +50,33 @@ class ExposysAppTestCase(unittest.TestCase):
         response = self.client.get('/api/candidate/999')
         self.assertEqual(response.status_code, 404)
 
+    def test_batch_send_status_endpoint(self):
+        response = self.client.get('/api/batch_send_status')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data['success'])
+        self.assertIn('batch_state', data)
+        self.assertIn('status', data['batch_state'])
+
+    def test_cancel_batch_send_when_idle(self):
+        response = self.client.post('/api/cancel_batch_send')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn('success', data)
+
+    def test_api_send_whatsapp_all_auto(self):
+        from unittest.mock import patch
+        with patch('threading.Thread.start') as mock_thread_start:
+            response = self.client.post('/api/send_whatsapp_all_auto', 
+                                        data=json.dumps({'your_name': 'Manoj Gowda', 'roll_number': '12345'}),
+                                        content_type='application/json')
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertTrue(data['success'])
+            self.assertEqual(data['total_candidates'], 6)
+            self.assertEqual(len(data['candidates']), 6)
+            mock_thread_start.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
+

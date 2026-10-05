@@ -25,6 +25,22 @@ const modalAutoSendBtn = document.getElementById('modalAutoSendBtn');
 const modalCloseBtn = document.getElementById('modalCloseBtn');
 const toastContainer = document.getElementById('toastContainer');
 
+// Batch Modal Elements (One Click Send to All)
+const autoSendAllBtn = document.getElementById('autoSendAllBtn');
+const batchModal = document.getElementById('batchModal');
+const batchModalCloseBtn = document.getElementById('batchModalCloseBtn');
+const batchStatusBanner = document.getElementById('batchStatusBanner');
+const batchSpinner = document.getElementById('batchSpinner');
+const batchStatusHeading = document.getElementById('batchStatusHeading');
+const batchStatusSubtext = document.getElementById('batchStatusSubtext');
+const batchProgressLabel = document.getElementById('batchProgressLabel');
+const batchProgressPercent = document.getElementById('batchProgressPercent');
+const batchProgressBar = document.getElementById('batchProgressBar');
+const batchCandidateList = document.getElementById('batchCandidateList');
+const batchCancelBtn = document.getElementById('batchCancelBtn');
+const batchDoneBtn = document.getElementById('batchDoneBtn');
+let batchPollInterval = null;
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     // Load persisted sender data from localStorage if available
@@ -56,9 +72,29 @@ document.addEventListener('DOMContentLoaded', () => {
         modalAutoSendBtn.addEventListener('click', triggerAutoSend);
     }
 
+    // Batch Auto-Send Events
+    if (autoSendAllBtn) {
+        autoSendAllBtn.addEventListener('click', handleAutoSendAll);
+    }
+    if (batchModalCloseBtn) {
+        batchModalCloseBtn.addEventListener('click', closeBatchModal);
+    }
+    if (batchCancelBtn) {
+        batchCancelBtn.addEventListener('click', cancelBatchSend);
+    }
+    if (batchDoneBtn) {
+        batchDoneBtn.addEventListener('click', closeBatchModal);
+    }
+    if (batchModal) {
+        batchModal.addEventListener('click', (e) => {
+            if (e.target === batchModal) closeBatchModal();
+        });
+    }
+
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && messageModal.classList.contains('active')) {
-            closeModal();
+        if (e.key === 'Escape') {
+            if (messageModal.classList.contains('active')) closeModal();
+            if (batchModal && batchModal.classList.contains('active')) closeBatchModal();
         }
     });
 });
@@ -281,6 +317,221 @@ async function triggerAutoSend() {
         console.error('Auto send error:', err);
         showToast('Error communicating with automation server', 'error');
     }
+}
+
+// -------------------------------------------------------------
+// BATCH AUTO-SEND TO ALL CANDIDATES (ONE CLICK)
+// -------------------------------------------------------------
+
+async function handleAutoSendAll() {
+    if (!currentCandidates || currentCandidates.length === 0) {
+        showToast('No candidates available to notify.', 'error');
+        return;
+    }
+
+    try {
+        const yourName = senderNameInput.value.trim();
+        const rollNumber = senderRollInput.value.trim();
+
+        // Open batch modal immediately for instant feedback
+        openBatchModal();
+        renderBatchCandidateList(currentCandidates, []);
+
+        batchStatusBanner.className = 'batch-status-banner';
+        batchSpinner.style.display = 'block';
+        batchStatusHeading.textContent = `Initiating Auto-Send for All ${currentCandidates.length} Candidates...`;
+        batchStatusSubtext.textContent = 'Connecting to automation worker...';
+        batchCancelBtn.style.display = 'inline-flex';
+        batchDoneBtn.style.display = 'none';
+        updateBatchProgress(0, currentCandidates.length);
+
+        if (autoSendAllBtn) {
+            autoSendAllBtn.disabled = true;
+            autoSendAllBtn.innerHTML = `
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+                </svg>
+                <span>Sending in Progress...</span>
+            `;
+        }
+
+        const response = await fetch('/api/send_whatsapp_all_auto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                your_name: yourName,
+                roll_number: rollNumber,
+                wait_seconds: 12
+            })
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            showToast(data.error || 'Failed to start auto-send batch', 'error');
+            batchStatusHeading.textContent = 'Could not start batch automation';
+            batchStatusSubtext.textContent = data.error || 'Please try again.';
+            batchSpinner.style.display = 'none';
+            resetAutoSendAllBtn();
+            return;
+        }
+
+        showToast(`Auto-send started for all ${data.total_candidates} candidates!`, 'success');
+        startBatchPolling();
+
+    } catch (err) {
+        console.error('Batch auto-send error:', err);
+        showToast('Error connecting to automation server', 'error');
+        resetAutoSendAllBtn();
+    }
+}
+
+function startBatchPolling() {
+    if (batchPollInterval) clearInterval(batchPollInterval);
+    pollBatchStatus();
+    batchPollInterval = setInterval(pollBatchStatus, 900);
+}
+
+function stopBatchPolling() {
+    if (batchPollInterval) {
+        clearInterval(batchPollInterval);
+        batchPollInterval = null;
+    }
+    resetAutoSendAllBtn();
+}
+
+function resetAutoSendAllBtn() {
+    if (autoSendAllBtn) {
+        autoSendAllBtn.disabled = false;
+        autoSendAllBtn.innerHTML = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+            </svg>
+            <span>Auto Send to All (One Click)</span>
+        `;
+    }
+}
+
+async function pollBatchStatus() {
+    try {
+        const res = await fetch('/api/batch_send_status');
+        const data = await res.json();
+        if (!data.success) return;
+
+        const state = data.batch_state;
+        updateBatchUI(state);
+
+        if (!state.active) {
+            stopBatchPolling();
+            if (state.status === 'completed') {
+                showToast('🎉 All candidates notified successfully!', 'success');
+            }
+        }
+    } catch (err) {
+        console.error('Status polling error:', err);
+    }
+}
+
+function updateBatchUI(state) {
+    const total = state.total || currentCandidates.length || 6;
+    const sentCount = (state.logs || []).filter(l => l.status === 'sent').length;
+    const progressVal = (state.status === 'completed') ? total : sentCount;
+    updateBatchProgress(progressVal, total);
+
+    if (state.status === 'running') {
+        batchStatusBanner.className = 'batch-status-banner';
+        batchSpinner.style.display = 'block';
+        batchCancelBtn.style.display = 'inline-flex';
+        batchDoneBtn.style.display = 'none';
+
+        const candName = state.current_candidate || 'Candidate';
+        const candPhone = state.current_phone ? `(+${state.current_phone})` : '';
+        const sec = state.seconds_remaining;
+        batchStatusHeading.textContent = `[Candidate ${state.current_index} of ${total}] Sending to ${candName} ${candPhone}`;
+        batchStatusSubtext.textContent = sec > 0
+            ? `WhatsApp Web opened in browser. Simulating Enter key in ${sec}s...`
+            : 'Dispatching message...';
+    } else if (state.status === 'completed') {
+        batchStatusBanner.className = 'batch-status-banner completed';
+        batchSpinner.style.display = 'none';
+        batchStatusHeading.textContent = `🎉 All ${total} Shortlisted Candidates Notified!`;
+        batchStatusSubtext.textContent = 'Personalized WhatsApp messages have been automatically sent to all numbers.';
+        batchCancelBtn.style.display = 'none';
+        batchDoneBtn.style.display = 'inline-flex';
+    } else if (state.status === 'cancelled') {
+        batchStatusBanner.className = 'batch-status-banner cancelled';
+        batchSpinner.style.display = 'none';
+        batchStatusHeading.textContent = 'Batch Auto-Send Cancelled';
+        batchStatusSubtext.textContent = 'Automated sending was stopped by user.';
+        batchCancelBtn.style.display = 'none';
+        batchDoneBtn.style.display = 'inline-flex';
+    }
+
+    renderBatchCandidateList(currentCandidates, state.logs || []);
+}
+
+function updateBatchProgress(current, total) {
+    if (total <= 0) total = 1;
+    const pct = Math.min(100, Math.round((current / total) * 100));
+    if (batchProgressLabel) batchProgressLabel.textContent = `Progress: ${current} / ${total} candidates`;
+    if (batchProgressPercent) batchProgressPercent.textContent = `${pct}%`;
+    if (batchProgressBar) batchProgressBar.style.width = `${pct}%`;
+}
+
+function renderBatchCandidateList(candidates, logs) {
+    if (!batchCandidateList) return;
+    batchCandidateList.innerHTML = '';
+    
+    const logsMap = {};
+    logs.forEach(l => { logsMap[l.id] = l; });
+
+    candidates.forEach(cand => {
+        const itemLog = logsMap[cand.id];
+        const status = itemLog ? itemLog.status : 'pending';
+
+        const itemEl = document.createElement('div');
+        itemEl.className = `batch-candidate-item ${status}`;
+
+        let statusBadge = '<span class="batch-item-status pending">⏱️ Queued</span>';
+        if (status === 'sending') {
+            statusBadge = '<span class="batch-item-status sending">🚀 Sending...</span>';
+        } else if (status === 'sent') {
+            statusBadge = '<span class="batch-item-status sent">✅ Sent</span>';
+        } else if (status === 'cancelled') {
+            statusBadge = '<span class="batch-item-status cancelled">❌ Cancelled</span>';
+        }
+
+        itemEl.innerHTML = `
+            <div class="batch-cand-info">
+                <span class="batch-cand-rank">#${cand.rank}</span>
+                <span class="batch-cand-name">${escapeHtml(cand.name)}</span>
+                <span class="batch-cand-phone">+${escapeHtml(cand.phone)}</span>
+            </div>
+            <div>${statusBadge}</div>
+        `;
+
+        batchCandidateList.appendChild(itemEl);
+    });
+}
+
+async function cancelBatchSend() {
+    try {
+        batchStatusSubtext.textContent = 'Requesting cancellation...';
+        const res = await fetch('/api/cancel_batch_send', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Batch auto-send cancelled.', 'info');
+        }
+    } catch (err) {
+        console.error('Cancel batch error:', err);
+    }
+}
+
+function openBatchModal() {
+    if (batchModal) batchModal.classList.add('active');
+}
+
+function closeBatchModal() {
+    if (batchModal) batchModal.classList.remove('active');
 }
 
 // Close Message Modal

@@ -315,6 +315,172 @@ def api_candidate_detail(cand_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# -------------------------------------------------------------
+# BATCH AUTO-SEND MANAGEMENT (ONE-CLICK SEND TO ALL)
+# -------------------------------------------------------------
+batch_lock = threading.Lock()
+batch_state = {
+    "active": False,
+    "status": "idle",  # "idle", "running", "completed", "cancelled", "error"
+    "current_index": 0,
+    "total": 0,
+    "current_candidate": None,
+    "current_phone": None,
+    "seconds_remaining": 0,
+    "wait_seconds": 12,
+    "logs": [],
+    "should_cancel": False,
+    "error_message": None
+}
+
+
+def auto_send_all_worker(candidates, wait_seconds=12):
+    """
+    Sequentially opens WhatsApp Web for each candidate and automatically
+    sends the personalized shortlist message via simulated Enter key.
+    """
+    global batch_state
+    with batch_lock:
+        batch_state["active"] = True
+        batch_state["status"] = "running"
+        batch_state["total"] = len(candidates)
+        batch_state["current_index"] = 0
+        batch_state["wait_seconds"] = wait_seconds
+        batch_state["should_cancel"] = False
+        batch_state["error_message"] = None
+        batch_state["logs"] = [
+            {
+                "id": c["id"],
+                "rank": c["rank"],
+                "name": c["name"],
+                "phone": c["phone"],
+                "status": "pending"
+            }
+            for c in candidates
+        ]
+
+    for idx, cand in enumerate(candidates):
+        with batch_lock:
+            if batch_state["should_cancel"]:
+                batch_state["status"] = "cancelled"
+                batch_state["active"] = False
+                break
+            batch_state["current_index"] = idx + 1
+            batch_state["current_candidate"] = cand["name"]
+            batch_state["current_phone"] = cand["phone"]
+            batch_state["logs"][idx]["status"] = "sending"
+
+        # Open candidate WhatsApp Web URL
+        url = cand.get("whatsapp_web_url") or f"https://web.whatsapp.com/send?phone={cand['phone']}&text={urllib.parse.quote(cand['personalized_message'], safe='')}"
+        try:
+            webbrowser.open(url)
+        except Exception as we:
+            print(f"[Auto-Send-All] Error opening browser for {cand['name']}: {we}")
+
+        # Wait with responsive cancellation check each second
+        for s in range(wait_seconds, 0, -1):
+            with batch_lock:
+                if batch_state["should_cancel"]:
+                    break
+                batch_state["seconds_remaining"] = s
+            time.sleep(1)
+
+        with batch_lock:
+            if batch_state["should_cancel"]:
+                batch_state["status"] = "cancelled"
+                batch_state["active"] = False
+                batch_state["logs"][idx]["status"] = "cancelled"
+                break
+
+        # Simulate pressing Enter via PyAutoGUI
+        if PYAUTOGUI_AVAILABLE:
+            try:
+                pyautogui.press('enter')
+                print(f"[Auto-Send-All] Enter key pressed for {cand['name']} (+{cand['phone']})")
+            except Exception as pe:
+                print(f"[Auto-Send-All] PyAutoGUI error for {cand['name']}: {pe}")
+
+        with batch_lock:
+            batch_state["logs"][idx]["status"] = "sent"
+
+        # Brief pause between candidate tabs
+        time.sleep(2)
+
+    with batch_lock:
+        if batch_state["status"] != "cancelled":
+            batch_state["status"] = "completed"
+        batch_state["active"] = False
+        batch_state["seconds_remaining"] = 0
+
+
+@app.route('/api/send_whatsapp_all_auto', methods=['POST'])
+def api_send_whatsapp_all_auto():
+    """
+    POST /api/send_whatsapp_all_auto
+    Triggers automated WhatsApp sending for all Top 6 shortlisted candidates in one click.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        your_name = data.get('your_name', '')
+        roll_number = data.get('roll_number', '')
+        wait_seconds = int(data.get('wait_seconds', 12))
+
+        with batch_lock:
+            if batch_state["active"]:
+                return jsonify({
+                    "success": False,
+                    "error": "An auto-send batch is already running. Please wait or cancel it first.",
+                    "batch_state": batch_state
+                }), 409
+
+        _, top6, _ = get_ranked_candidates(your_name, roll_number)
+        if not top6:
+            return jsonify({"success": False, "error": "No shortlisted candidates found to send."}), 400
+
+        threading.Thread(
+            target=auto_send_all_worker,
+            args=(top6, wait_seconds),
+            daemon=True
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "message": f"Auto-sending WhatsApp messages to all {len(top6)} candidates in one click.",
+            "total_candidates": len(top6),
+            "candidates": top6
+        }), 200
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/batch_send_status', methods=['GET'])
+def api_batch_send_status():
+    """
+    GET /api/batch_send_status
+    Returns the real-time status of the batch auto-sending task.
+    """
+    with batch_lock:
+        return jsonify({
+            "success": True,
+            "batch_state": dict(batch_state)
+        }), 200
+
+
+@app.route('/api/cancel_batch_send', methods=['POST'])
+def api_cancel_batch_send():
+    """
+    POST /api/cancel_batch_send
+    Cancels the active batch auto-sending process.
+    """
+    with batch_lock:
+        if batch_state["active"]:
+            batch_state["should_cancel"] = True
+            return jsonify({"success": True, "message": "Batch auto-send cancellation requested."}), 200
+        else:
+            return jsonify({"success": False, "message": "No active batch auto-send to cancel."}), 200
+
+
 def auto_send_whatsapp_worker(phone, message_text, wait_seconds=12):
     """
     Automated background worker:
