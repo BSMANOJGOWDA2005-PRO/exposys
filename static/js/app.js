@@ -20,6 +20,8 @@ const modalCandidatePhone = document.getElementById('modalCandidatePhone');
 const modalMessageText = document.getElementById('modalMessageText');
 const modalCopyBtn = document.getElementById('modalCopyBtn');
 const modalWhatsAppBtn = document.getElementById('modalWhatsAppBtn');
+const modalWhatsAppWebBtn = document.getElementById('modalWhatsAppWebBtn');
+const modalAutoSendBtn = document.getElementById('modalAutoSendBtn');
 const modalCloseBtn = document.getElementById('modalCloseBtn');
 const toastContainer = document.getElementById('toastContainer');
 
@@ -49,6 +51,10 @@ document.addEventListener('DOMContentLoaded', () => {
             copyToClipboard(modalMessageText.textContent);
         }
     });
+
+    if (modalAutoSendBtn) {
+        modalAutoSendBtn.addEventListener('click', triggerAutoSend);
+    }
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && messageModal.classList.contains('active')) {
@@ -196,6 +202,26 @@ function renderTable(candidates) {
     });
 }
 
+// WhatsApp Dispatcher (Universal wa.me + WhatsApp Web fallback)
+function openWhatsApp(candidate) {
+    if (!candidate || !candidate.phone) {
+        showToast('Invalid candidate phone number', 'error');
+        return;
+    }
+
+    // Standard universal URL for mobile app & desktop WhatsApp
+    const universalUrl = candidate.whatsapp_url;
+    // Direct WhatsApp Web browser URL
+    const webUrl = candidate.whatsapp_web_url || `https://web.whatsapp.com/send?phone=${candidate.phone}&text=${encodeURIComponent(candidate.personalized_message)}`;
+
+    // Open universal link
+    const win = window.open(universalUrl, '_blank');
+    if (!win || win.closed || typeof win.closed === 'undefined') {
+        // Pop-up blocker triggered: fallback to direct location
+        window.location.href = universalUrl;
+    }
+}
+
 // Open Message Modal
 function openModal(candidate) {
     activeCandidate = candidate;
@@ -203,13 +229,71 @@ function openModal(candidate) {
     modalCandidatePhone.textContent = `+${candidate.phone}`;
     modalMessageText.textContent = candidate.personalized_message;
     modalWhatsAppBtn.href = candidate.whatsapp_url;
+    
+    const webBtn = document.getElementById('modalWhatsAppWebBtn');
+    if (webBtn) {
+        webBtn.href = candidate.whatsapp_web_url || `https://web.whatsapp.com/send?phone=${candidate.phone}&text=${encodeURIComponent(candidate.personalized_message)}`;
+    }
+
+    modalWhatsAppBtn.onclick = (e) => {
+        // Also copy text to clipboard as convenient backup before WhatsApp opens
+        copyToClipboardSilently(candidate.personalized_message);
+    };
     messageModal.classList.add('active');
+}
+
+// Automated WhatsApp Sender (Opens & Automatically Presses Send)
+async function triggerAutoSend() {
+    if (!activeCandidate) {
+        showToast('No candidate selected', 'error');
+        return;
+    }
+
+    try {
+        const yourName = senderNameInput.value.trim();
+        const rollNumber = senderRollInput.value.trim();
+
+        // Also copy text to clipboard as safety backup
+        copyToClipboardSilently(activeCandidate.personalized_message);
+
+        showToast(`Opening WhatsApp for ${activeCandidate.name}... Sending automatically in 12s.`, 'success');
+
+        const response = await fetch('/api/send_whatsapp_auto', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: activeCandidate.id,
+                your_name: yourName,
+                roll_number: rollNumber,
+                wait_seconds: 12
+            })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            showToast('Automation dispatched! Keep browser focused on WhatsApp Web.', 'success');
+        } else {
+            showToast(data.error || 'Failed to trigger automated send', 'error');
+        }
+    } catch (err) {
+        console.error('Auto send error:', err);
+        showToast('Error communicating with automation server', 'error');
+    }
 }
 
 // Close Message Modal
 function closeModal() {
     messageModal.classList.remove('active');
     activeCandidate = null;
+}
+
+// Silent clipboard copy for convenient backup
+function copyToClipboardSilently(text) {
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).catch(() => {});
+    }
 }
 
 // Copy to Clipboard

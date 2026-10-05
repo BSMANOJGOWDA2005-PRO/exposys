@@ -1,8 +1,17 @@
 import os
 import re
+import time
+import threading
+import webbrowser
 import urllib.parse
 import pandas as pd
 from flask import Flask, render_template, jsonify, request
+
+try:
+    import pyautogui
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -65,10 +74,17 @@ def build_whatsapp_url(phone_cleaned, message_text):
     """
     STEP 7 & 12 requirement:
     Builds the click-to-chat WhatsApp link:
-    https://wa.me/<PHONE_NUMBER>?text=<URL_ENCODED_MESSAGE>
+    - https://wa.me/<PHONE_NUMBER>?text=<URL_ENCODED_MESSAGE> (universal / mobile / desktop app)
+    - https://web.whatsapp.com/send?phone=<PHONE_NUMBER>&text=<URL_ENCODED_MESSAGE> (direct browser WhatsApp Web)
     """
-    encoded_message = urllib.parse.quote(message_text)
+    encoded_message = urllib.parse.quote(message_text, safe='')
     return f"https://wa.me/{phone_cleaned}?text={encoded_message}"
+
+
+def build_whatsapp_web_url(phone_cleaned, message_text):
+    """Direct WhatsApp Web fallback URL."""
+    encoded_message = urllib.parse.quote(message_text, safe='')
+    return f"https://web.whatsapp.com/send?phone={phone_cleaned}&text={encoded_message}"
 
 
 def load_and_process_dataset(file_path=DATASET_PATH):
@@ -183,6 +199,7 @@ def get_ranked_candidates(your_name=None, roll_number=None):
         )
         cand["personalized_message"] = msg
         cand["whatsapp_url"] = build_whatsapp_url(cand["phone"], msg)
+        cand["whatsapp_web_url"] = build_whatsapp_web_url(cand["phone"], msg)
 
     top6 = ranked[:6]
     return ranked, top6, invalid_rows
@@ -293,6 +310,65 @@ def api_candidate_detail(cand_id):
                 }), 200
 
         return jsonify({"success": False, "error": f"Candidate with ID {cand_id} not found."}), 404
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def auto_send_whatsapp_worker(phone, message_text, wait_seconds=12):
+    """
+    Automated background worker:
+    1. Opens WhatsApp Web with candidate phone number and pre-filled message text.
+    2. Waits for WhatsApp Web to load the conversation and populate the input box.
+    3. Simulates pressing the 'Enter' key automatically via pyautogui.
+    """
+    try:
+        # Use direct WhatsApp Web URL for reliable browser loading
+        url = f"https://web.whatsapp.com/send?phone={phone}&text={urllib.parse.quote(message_text, safe='')}"
+        webbrowser.open(url)
+        
+        if PYAUTOGUI_AVAILABLE:
+            # Wait for WhatsApp Web UI to render and message to appear in the typing area
+            time.sleep(wait_seconds)
+            pyautogui.press('enter')
+            print(f"[Auto-Send] Successfully pressed Enter for candidate phone: {phone}")
+    except Exception as e:
+        print(f"[Auto-Send] Error during automated WhatsApp sending: {e}")
+
+
+@app.route('/api/send_whatsapp_auto', methods=['POST'])
+def api_send_whatsapp_auto():
+    """
+    POST /api/send_whatsapp_auto
+    Triggers automated WhatsApp sending:
+    - Opens WhatsApp Web with pre-typed text
+    - Automatically presses 'Enter' to send after loading
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        cand_id = data.get('id')
+        your_name = data.get('your_name', '')
+        roll_number = data.get('roll_number', '')
+        wait_seconds = int(data.get('wait_seconds', 12))
+
+        all_ranked, _, _ = get_ranked_candidates(your_name, roll_number)
+        target_cand = next((c for c in all_ranked if c["id"] == cand_id), None)
+
+        if not target_cand:
+            return jsonify({"success": False, "error": f"Candidate ID {cand_id} not found"}), 404
+
+        # Start non-blocking daemon thread so API returns immediately to the frontend
+        threading.Thread(
+            target=auto_send_whatsapp_worker,
+            args=(target_cand["phone"], target_cand["personalized_message"], wait_seconds),
+            daemon=True
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "message": f"WhatsApp opened for {target_cand['name']} (+{target_cand['phone']}). Message will auto-send in {wait_seconds}s.",
+            "candidate": target_cand
+        }), 200
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
